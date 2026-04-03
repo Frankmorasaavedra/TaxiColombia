@@ -165,7 +165,37 @@ backend:
         agent: "main"
         comment: "Driver can accept service, status changes to accepted, customer info revealed only to accepting driver"
 
-  - task: "Driver Location Updates"
+  - task: "Zone Masking - Available Services API hides pickup_address and customer_phone"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/services/available now returns only pickup_zone, destination, notes, created_at, distance_km, estimated_minutes. Does NOT return pickup_address or customer_phone. POST /api/services/{id}/accept returns full service data including customer_phone and pickup_address only to the accepting driver (if they are nearest)."
+      - working: true
+        agent: "testing"
+        comment: "✅ CRITICAL TEST PASSED: Zone masking working correctly. GET /api/services/available properly hides pickup_address and customer_phone fields. Only shows pickup_zone, destination, notes, created_at, distance_km, estimated_minutes. Tested with real service data - sensitive information is completely hidden from all drivers until acceptance."
+
+  - task: "Nearest Driver Acceptance Validation"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/services/{id}/accept validates the requesting driver is nearest using Haversine. Non-nearest drivers get 400 error. Test with 2 drivers at different distances."
+      - working: true
+        agent: "testing"
+        comment: "✅ CRITICAL TEST PASSED: Nearest driver validation working correctly. Tested with 2 drivers at different GPS locations (Juan Pérez closer at 4.6100,-74.0820 vs Carlos Taxista farther at 4.6200,-74.0900). Farther driver correctly rejected with 400 error. Nearest driver successfully accepted and received full service data including customer_phone and pickup_address."
+
+  - task: "N8N WhatsApp Webhook"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -173,9 +203,12 @@ backend:
     priority: "medium"
     needs_retesting: false
     status_history:
-      - working: true
+      - working: "NA"
         agent: "main"
-        comment: "Drivers can update their GPS location via API"
+        comment: "POST /api/webhook/whatsapp creates service from WhatsApp data. Returns success with service_id and reply message for n8n."
+      - working: true
+        agent: "testing"
+        comment: "✅ WhatsApp webhook working correctly. Successfully tested POST /api/webhook/whatsapp with customer_phone, message_text, latitude, longitude. Creates service and returns proper response with success=true, service_id, and reply_to_customer message for n8n integration."
 
 frontend:
   - task: "Login Screen (Driver & Admin)"
@@ -190,17 +223,17 @@ frontend:
         agent: "main"
         comment: "Toggle between driver (phone) and admin (user/pass) login works"
 
-  - task: "Driver Home - Service List with Proximity"
+  - task: "Driver Home - Zone Masking UI"
     implemented: true
-    working: true
+    working: "NA"
     file: "/app/frontend/app/driver-home.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: false
+    needs_retesting: true
     status_history:
-      - working: true
+      - working: "NA"
         agent: "main"
-        comment: "Shows services with time badge, sorted by proximity. GPS tracking enabled."
+        comment: "Fixed: now shows pickup_zone instead of pickup_address. Removed is_nearest badge per user requirement. Fixed handleAcceptService(item) bug - was passing object instead of string ID. All drivers see same ACEPTAR SERVICIO button."
 
   - task: "Service Detail with Customer Info"
     implemented: true
@@ -212,19 +245,19 @@ frontend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Shows full customer info (phone, address), call/WhatsApp buttons, Google Maps link"
+        comment: "Shows full customer info (phone, address), call/WhatsApp buttons, Google Maps link after acceptance"
 
-  - task: "Admin Panel"
+  - task: "Admin Panel - Zone Input"
     implemented: true
-    working: true
+    working: "NA"
     file: "/app/frontend/app/admin.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: false
+    needs_retesting: true
     status_history:
-      - working: true
+      - working: "NA"
         agent: "main"
-        comment: "Can create drivers, create service requests with GPS, view stats"
+        comment: "Admin form has separate fields for Zona General (visible to all) and Dirección Exacta (only on accept). Added missing zoneSection and sectionHeader styles."
 
 metadata:
   created_by: "main_agent"
@@ -242,3 +275,14 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: "MVP completed with GPS-based proximity sorting. Backend APIs tested with curl, frontend verified with screenshots. App shows estimated arrival time for each service."
+  - agent: "main"
+    message: "Fixed zone masking: 1) Backend GET /api/services/available already correctly hides pickup_address and customer_phone. 2) Frontend driver-home.tsx fixed to show pickup_zone instead of pickup_address. 3) Removed is_nearest badge/indicator per user requirement. 4) Fixed critical bug - handleAcceptService was receiving full object instead of service ID string. 5) Added missing zoneSection and sectionHeader styles to admin.tsx. Please test: a) Create service with zone, b) GET /api/services/available must NOT contain pickup_address or customer_phone, c) Accept service must return full data, d) Non-nearest driver rejection."
+  - agent: "testing"
+    message: "✅ ALL CRITICAL BACKEND TESTS PASSED! Comprehensive testing completed: 1) Zone Masking: GET /api/services/available correctly hides pickup_address and customer_phone, only shows pickup_zone. 2) Nearest Driver Validation: Farther driver correctly rejected with 400 error, nearest driver successfully accepted and received full service data. 3) WhatsApp Webhook: Successfully creates services and returns proper n8n response. 4) All basic functionality (admin setup, driver registration/login, service creation) working correctly. Backend APIs are production-ready."
+
+test_plan:
+  current_focus:
+    - "All backend critical features tested and working"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

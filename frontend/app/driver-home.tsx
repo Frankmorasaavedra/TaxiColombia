@@ -19,16 +19,12 @@ const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 interface Service {
   id: string;
-  pickup_address: string;
-  pickup_latitude?: number;
-  pickup_longitude?: number;
+  pickup_zone?: string;  // Zona general (visible para todos)
   destination?: string;
   notes?: string;
   created_at: string;
-  customer_name?: string;
   distance_km?: number;
   estimated_minutes?: number;
-  is_nearest?: boolean;
 }
 
 interface Driver {
@@ -199,25 +195,7 @@ export default function DriverHomeScreen() {
     fetchServices();
   };
 
-  const handleAcceptService = async (service: Service) => {
-    if (!driver) return;
-
-    // Show warning if not the nearest
-    if (service.is_nearest === false) {
-      Alert.alert(
-        '⚠️ Hay un conductor más cercano',
-        'Solo el conductor más cercano puede tomar este servicio. ¿Deseas intentar de todas formas?',
-        [
-          { text: 'Cancelar', style: 'cancel' },
-          { text: 'Intentar', onPress: () => tryAcceptService(service.id) }
-        ]
-      );
-    } else {
-      tryAcceptService(service.id);
-    }
-  };
-
-  const tryAcceptService = async (serviceId: string) => {
+  const handleAcceptService = async (serviceId: string) => {
     if (!driver) return;
     
     setAcceptingId(serviceId);
@@ -234,7 +212,7 @@ export default function DriverHomeScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        Alert.alert('✅ ¡Servicio Aceptado!', data.message, [
+        Alert.alert('✅ ¡Servicio Asignado!', 'Ahora puedes ver la dirección exacta y el teléfono del cliente', [
           {
             text: 'Ver Detalles',
             onPress: () => {
@@ -250,8 +228,8 @@ export default function DriverHomeScreen() {
         ]);
         fetchServices();
       } else {
-        Alert.alert('❌ No disponible', data.detail || 'No se pudo aceptar el servicio');
-        fetchServices(); // Refresh to update is_nearest status
+        Alert.alert('No disponible', data.detail || 'No se pudo asignar el servicio. Intenta con otro.');
+        fetchServices();
       }
     } catch (error) {
       Alert.alert('Error', 'No se pudo conectar al servidor');
@@ -277,18 +255,7 @@ export default function DriverHomeScreen() {
   };
 
   const renderServiceItem = ({ item }: { item: Service }) => (
-    <View style={[
-      styles.serviceCard,
-      item.is_nearest && styles.nearestServiceCard
-    ]}>
-      {/* Nearest Badge */}
-      {item.is_nearest && (
-        <View style={styles.nearestBadge}>
-          <Ionicons name="star" size={16} color="#000" />
-          <Text style={styles.nearestText}>¡ERES EL MÁS CERCANO!</Text>
-        </View>
-      )}
-
+    <View style={styles.serviceCard}>
       {/* Time/Distance Badge */}
       {item.estimated_minutes !== null && item.estimated_minutes !== undefined && (
         <View style={[
@@ -312,16 +279,14 @@ export default function DriverHomeScreen() {
           <Ionicons name="calendar" size={16} color="#888" />
           <Text style={styles.headerTimeText}>{formatTime(item.created_at)}</Text>
         </View>
-        {item.customer_name && (
-          <Text style={styles.customerName}>{item.customer_name}</Text>
-        )}
       </View>
 
+      {/* Zone - Only general area, NOT exact address */}
       <View style={styles.addressContainer}>
         <Ionicons name="location" size={24} color="#FF6B6B" />
         <View style={styles.addressTextContainer}>
-          <Text style={styles.addressLabel}>Recoger en:</Text>
-          <Text style={styles.addressText}>{item.pickup_address}</Text>
+          <Text style={styles.addressLabel}>Zona de recogida:</Text>
+          <Text style={styles.addressText}>{item.pickup_zone || 'Zona sin especificar'}</Text>
         </View>
       </View>
 
@@ -345,10 +310,9 @@ export default function DriverHomeScreen() {
       <TouchableOpacity
         style={[
           styles.acceptButton,
-          item.is_nearest && styles.nearestAcceptButton,
           acceptingId === item.id && styles.acceptingButton,
         ]}
-        onPress={() => handleAcceptService(item)}
+        onPress={() => handleAcceptService(item.id)}
         disabled={acceptingId === item.id}
       >
         {acceptingId === item.id ? (
@@ -356,9 +320,7 @@ export default function DriverHomeScreen() {
         ) : (
           <>
             <Ionicons name="checkmark-circle" size={24} color="#000" />
-            <Text style={styles.acceptButtonText}>
-              {item.is_nearest ? 'ACEPTAR SERVICIO' : 'INTENTAR ACEPTAR'}
-            </Text>
+            <Text style={styles.acceptButtonText}>ACEPTAR SERVICIO</Text>
           </>
         )}
       </TouchableOpacity>
@@ -606,27 +568,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: '#FFD700',
   },
-  nearestServiceCard: {
-    borderLeftColor: '#4CAF50',
-    borderWidth: 2,
-    borderColor: '#4CAF50',
-  },
-  nearestBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: '#4CAF50',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginBottom: 12,
-    gap: 4,
-  },
-  nearestText: {
-    color: '#000',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
+  /* Removed nearestServiceCard, nearestBadge, nearestText styles */
   timeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -662,10 +604,7 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 14,
   },
-  customerName: {
-    color: '#aaa',
-    fontSize: 14,
-  },
+  /* customerName style removed */
   addressContainer: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -707,9 +646,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 8,
   },
-  nearestAcceptButton: {
-    backgroundColor: '#4CAF50',
-  },
+  /* nearestAcceptButton removed */
   acceptingButton: {
     backgroundColor: '#999',
   },

@@ -51,7 +51,8 @@ export default function AdminScreen() {
   const [showServiceModal, setShowServiceModal] = useState(false);
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
-  const [pickupAddress, setPickupAddress] = useState('');
+  const [pickupZone, setPickupZone] = useState('');  // Zona general (visible para todos)
+  const [pickupAddress, setPickupAddress] = useState('');  // Dirección exacta (solo al aceptar)
   const [pickupLatitude, setPickupLatitude] = useState('');
   const [pickupLongitude, setPickupLongitude] = useState('');
   const [destination, setDestination] = useState('');
@@ -145,8 +146,8 @@ export default function AdminScreen() {
   };
 
   const handleAddService = async () => {
-    if (!customerPhone.trim() || !pickupAddress.trim()) {
-      Alert.alert('Error', 'Teléfono y dirección son requeridos');
+    if (!customerPhone.trim() || !pickupAddress.trim() || !pickupZone.trim()) {
+      Alert.alert('Error', 'Teléfono, zona y dirección exacta son requeridos');
       return;
     }
 
@@ -155,7 +156,8 @@ export default function AdminScreen() {
       const serviceData: any = {
         customer_phone: customerPhone.trim(),
         customer_name: customerName.trim() || undefined,
-        pickup_address: pickupAddress.trim(),
+        pickup_zone: pickupZone.trim(),  // Zona general (visible para todos)
+        pickup_address: pickupAddress.trim(),  // Dirección exacta (solo al aceptar)
         destination: destination.trim() || undefined,
         notes: notes.trim() || undefined,
       };
@@ -175,8 +177,12 @@ export default function AdminScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        Alert.alert('¡Éxito!', 'Solicitud de servicio creada. Los conductores la verán ahora.');
+        Alert.alert('¡Éxito!', 'Servicio creado. Los taxistas verán solo la zona, no la dirección exacta.');
         setShowServiceModal(false);
+        setCustomerPhone('');
+        setCustomerName('');
+        setPickupZone('');
+        setPickupAddress('');
         setCustomerPhone('');
         setCustomerName('');
         setPickupAddress('');
@@ -494,15 +500,28 @@ export default function AdminScreen() {
                 onChangeText={setCustomerName}
               />
 
-              <Text style={styles.inputLabel}>Dirección de Recogida *</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                placeholder="Ej: Calle 72 #10-25, Bogotá"
-                placeholderTextColor="#666"
-                value={pickupAddress}
-                onChangeText={setPickupAddress}
-                multiline
-              />
+              <View style={styles.zoneSection}>
+                <Text style={styles.sectionHeader}>📍 Ubicación</Text>
+                
+                <Text style={styles.inputLabel}>Zona General * (visible para todos los taxistas)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej: Calle 72, Llano Largo"
+                  placeholderTextColor="#666"
+                  value={pickupZone}
+                  onChangeText={setPickupZone}
+                />
+
+                <Text style={styles.inputLabel}>Dirección Exacta * (solo visible al aceptar)</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  placeholder="Ej: Calle 72 #10-25, Edificio Torres del Parque, Apto 302"
+                  placeholderTextColor="#666"
+                  value={pickupAddress}
+                  onChangeText={setPickupAddress}
+                  multiline
+                />
+              </View>
 
               {/* GPS Location Section */}
               <View style={styles.locationSection}>
@@ -703,6 +722,12 @@ const styles = StyleSheet.create({
     color: '#fff',
     marginBottom: 16,
   },
+  sectionHeader: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFD700',
+    marginBottom: 12,
+  },
   driverCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -816,6 +841,12 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   locationSection: {
+    backgroundColor: '#0f3460',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  zoneSection: {
     backgroundColor: '#0f3460',
     borderRadius: 12,
     padding: 16,
