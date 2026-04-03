@@ -225,15 +225,18 @@ frontend:
 
   - task: "Driver Home - Zone Masking UI"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/driver-home.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Fixed: now shows pickup_zone instead of pickup_address. Removed is_nearest badge per user requirement. Fixed handleAcceptService(item) bug - was passing object instead of string ID. All drivers see same ACEPTAR SERVICIO button."
+      - working: true
+        agent: "testing"
+        comment: "✅ CRITICAL TEST PASSED: Zone masking UI working perfectly. Tested with 7 available services - all show 'Zona de recogida:' labels with zone text (e.g., 'Calle 72, Llano Largo'). Exact addresses and customer phone numbers are completely hidden from driver view. All buttons correctly display 'ACEPTAR SERVICIO' with no 'is_nearest' badges visible. Driver login successful with registered phone '3001112222'. Zone masking implementation is production-ready."
 
   - task: "Service Detail with Customer Info"
     implemented: true
@@ -249,15 +252,18 @@ frontend:
 
   - task: "Admin Panel - Zone Input"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/admin.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Admin form has separate fields for Zona General (visible to all) and Dirección Exacta (only on accept). Added missing zoneSection and sectionHeader styles."
+      - working: true
+        agent: "testing"
+        comment: "✅ CRITICAL TEST PASSED: Admin panel zone input working perfectly. Service creation modal has separate fields: 'Zona General * (visible para todos los taxistas)' and 'Dirección Exacta * (solo visible al aceptar)'. Form accepts input correctly - tested with customer phone '3109876543', zone 'Calle 72, Llano Largo', exact address 'Calle 72 #10-25 Edificio Torres', and GPS coordinates. Driver registration also working - successfully registered 'Test Driver' with phone '3001112222' and plate 'ABC999'. Admin panel UI is production-ready."
 
 metadata:
   created_by: "main_agent"
@@ -279,10 +285,12 @@ agent_communication:
     message: "Fixed zone masking: 1) Backend GET /api/services/available already correctly hides pickup_address and customer_phone. 2) Frontend driver-home.tsx fixed to show pickup_zone instead of pickup_address. 3) Removed is_nearest badge/indicator per user requirement. 4) Fixed critical bug - handleAcceptService was receiving full object instead of service ID string. 5) Added missing zoneSection and sectionHeader styles to admin.tsx. Please test: a) Create service with zone, b) GET /api/services/available must NOT contain pickup_address or customer_phone, c) Accept service must return full data, d) Non-nearest driver rejection."
   - agent: "testing"
     message: "✅ ALL CRITICAL BACKEND TESTS PASSED! Comprehensive testing completed: 1) Zone Masking: GET /api/services/available correctly hides pickup_address and customer_phone, only shows pickup_zone. 2) Nearest Driver Validation: Farther driver correctly rejected with 400 error, nearest driver successfully accepted and received full service data. 3) WhatsApp Webhook: Successfully creates services and returns proper n8n response. 4) All basic functionality (admin setup, driver registration/login, service creation) working correctly. Backend APIs are production-ready."
+  - agent: "testing"
+    message: "✅ ALL CRITICAL FRONTEND TESTS PASSED! Comprehensive UI testing completed on mobile viewport (390x844): 1) Admin Panel: Zone masking form working perfectly with separate 'Zona General (visible para todos)' and 'Dirección Exacta (solo visible al aceptar)' fields. Service creation and driver registration working. 2) Driver Home: Zone masking UI working perfectly - 7 services displayed showing only 'Zona de recogida:' with zone text, exact addresses and customer phones completely hidden. All buttons correctly show 'ACEPTAR SERVICIO' with no 'is_nearest' badges. 3) Login flows working for both admin and driver. Frontend is production-ready."
 
 test_plan:
   current_focus:
-    - "All backend critical features tested and working"
+    - "All critical frontend and backend features tested and working"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
