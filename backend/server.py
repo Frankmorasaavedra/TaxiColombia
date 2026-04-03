@@ -91,6 +91,36 @@ class AdminLogin(BaseModel):
     username: str
     password: str
 
+# ==================== N8N / WHATSAPP WEBHOOK MODELS ====================
+
+class WhatsAppWebhook(BaseModel):
+    """Model for receiving WhatsApp messages via n8n webhook"""
+    customer_phone: str  # Phone number from WhatsApp (e.g., "573001234567")
+    customer_name: Optional[str] = None  # Contact name if available
+    message_text: Optional[str] = None  # Text message content (address)
+    # Location if customer shares it via WhatsApp
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    # Optional fields
+    destination: Optional[str] = None
+    message_id: Optional[str] = None  # WhatsApp message ID for tracking
+
+class WhatsAppResponse(BaseModel):
+    """Response to send back to n8n for WhatsApp reply"""
+    success: bool
+    service_id: Optional[str] = None
+    message: str
+    reply_to_customer: str  # Message to send back to customer via WhatsApp
+
+class ServiceStatusCallback(BaseModel):
+    """Model for service status updates (to notify customer via n8n)"""
+    service_id: str
+    status: str
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_plate: Optional[str] = None
+    estimated_minutes: Optional[int] = None
+
 # ==================== HELPER FUNCTIONS ====================
 
 def hash_password(password: str) -> str:
@@ -367,6 +397,180 @@ async def get_stats():
         "accepted_services": accepted_services,
         "completed_services": completed_services
     }
+
+# ==================== N8N / WHATSAPP WEBHOOK ROUTES ====================
+
+@api_router.post("/webhook/whatsapp", response_model=WhatsAppResponse)
+async def whatsapp_webhook(data: WhatsAppWebhook):
+    """
+    Webhook endpoint for n8n to send WhatsApp messages.
+    
+    n8n Workflow:
+    1. WhatsApp Trigger (receives customer message)
+    2. HTTP Request to this endpoint
+    3. Send response back to customer via WhatsApp
+    
+    Expected data from n8n:
+    - customer_phone: WhatsApp number (e.g., "573001234567")
+    - customer_name: Contact name (optional)
+    - message_text: The address/message sent by customer
+    - latitude/longitude: If customer shared location
+    """
+    
+    # Validate we have at least phone and some location info
+    if not data.customer_phone:
+        return WhatsAppResponse(
+            success=False,
+            message="Número de teléfono requerido",
+            reply_to_customer="❌ Error: No pudimos procesar tu solicitud. Por favor intenta de nuevo."
+        )
+    
+    # Clean phone number (remove WhatsApp prefix if present)
+    phone = data.customer_phone.replace("whatsapp:", "").replace("+", "")
+    
+    # Need either coordinates or text address
+    if not data.latitude and not data.message_text:
+        return WhatsAppResponse(
+            success=False,
+            message="Se requiere ubicación o dirección",
+            reply_to_customer="📍 Por favor envía tu ubicación o escribe la dirección donde necesitas el taxi."
+        )
+    
+    # Create the service request
+    pickup_address = data.message_text or f"Ubicación GPS: {data.latitude}, {data.longitude}"
+    
+    service_data = {
+        "customer_phone": phone,
+        "customer_name": data.customer_name,
+        "pickup_address": pickup_address,
+        "pickup_latitude": data.latitude,
+        "pickup_longitude": data.longitude,
+        "destination": data.destination,
+        "notes": f"Solicitud via WhatsApp. ID: {data.message_id}" if data.message_id else "Solicitud via WhatsApp"
+    }
+    
+    service_obj = ServiceRequest(**service_data)
+    await db.service_requests.insert_one(service_obj.dict())
+    
+    # Log for debugging
+    logger.info(f"WhatsApp service created: {service_obj.id} for {phone}")
+    
+    return WhatsAppResponse(
+        success=True,
+        service_id=service_obj.id,
+        message="Servicio creado exitosamente",
+        reply_to_customer=f"✅ ¡Tu solicitud de taxi ha sido recibida!\n\n📍 Recogida: {pickup_address}\n\n🚕 En breve un conductor aceptará tu servicio y te contactará.\n\n🆔 Código: {service_obj.id[:8]}"
+    )
+
+
+@api_router.get("/webhook/service-status/{service_id}")
+async def get_service_status_for_webhook(service_id: str):
+    """
+    Get service status for n8n to check and notify customer.
+    
+    n8n can poll this endpoint to check if a driver accepted the service
+    and then send a WhatsApp notification to the customer.
+    """
+    service = await db.service_requests.find_one({"id": service_id})
+    
+    if not service:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    
+    response = {
+        "service_id": service["id"],
+        "status": service["status"],
+        "customer_phone": service["customer_phone"],
+        "pickup_address": service["pickup_address"],
+        "created_at": service["created_at"],
+        "driver_info": None,
+        "notification_message": None
+    }
+    
+    # If accepted, get driver info
+    if service["status"] == "accepted" and service.get("accepted_by_driver_id"):
+        driver = await db.drivers.find_one({"id": service["accepted_by_driver_id"]})
+        if driver:
+            response["driver_info"] = {
+                "name": driver["name"],
+                "phone": driver["phone"],
+                "vehicle_plate": driver["vehicle_plate"]
+            }
+            response["notification_message"] = f"""🚕 ¡Tu taxi está en camino!
+
+👤 Conductor: {driver["name"]}
+🚗 Placa: {driver["vehicle_plate"]}
+📞 Teléfono: {driver["phone"]}
+
+El conductor te contactará cuando llegue a tu ubicación."""
+    
+    elif service["status"] == "completed":
+        response["notification_message"] = "✅ Tu servicio ha sido completado. ¡Gracias por usar Taxi Colombia!"
+    
+    elif service["status"] == "pending":
+        response["notification_message"] = "⏳ Tu solicitud está pendiente. Estamos buscando un conductor cercano."
+    
+    return response
+
+
+@api_router.get("/webhook/pending-notifications")
+async def get_pending_notifications():
+    """
+    Get all accepted services that haven't been notified yet.
+    
+    n8n can poll this endpoint periodically to find services where:
+    - Status is "accepted"
+    - Customer hasn't been notified yet (notified_customer = false)
+    
+    After notifying, n8n should call /webhook/mark-notified/{service_id}
+    """
+    # Find accepted services that haven't notified the customer
+    services = await db.service_requests.find({
+        "status": "accepted",
+        "customer_notified": {"$ne": True}
+    }).to_list(50)
+    
+    notifications = []
+    for service in services:
+        driver = await db.drivers.find_one({"id": service.get("accepted_by_driver_id")})
+        if driver:
+            notifications.append({
+                "service_id": service["id"],
+                "customer_phone": service["customer_phone"],
+                "customer_name": service.get("customer_name"),
+                "pickup_address": service["pickup_address"],
+                "driver_name": driver["name"],
+                "driver_phone": driver["phone"],
+                "driver_plate": driver["vehicle_plate"],
+                "message": f"""🚕 ¡Tu taxi está en camino!
+
+👤 Conductor: {driver["name"]}
+🚗 Placa: {driver["vehicle_plate"]}
+📞 Teléfono: {driver["phone"]}
+
+📍 Te recogerá en: {service["pickup_address"]}
+
+El conductor te contactará cuando llegue."""
+            })
+    
+    return {"pending_notifications": notifications, "count": len(notifications)}
+
+
+@api_router.post("/webhook/mark-notified/{service_id}")
+async def mark_service_notified(service_id: str):
+    """
+    Mark a service as notified (customer received WhatsApp about driver).
+    
+    n8n should call this after successfully sending WhatsApp to customer.
+    """
+    result = await db.service_requests.update_one(
+        {"id": service_id},
+        {"$set": {"customer_notified": True, "notified_at": datetime.utcnow()}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    
+    return {"success": True, "message": "Servicio marcado como notificado"}
 
 # Include the router in the main app
 app.include_router(api_router)
