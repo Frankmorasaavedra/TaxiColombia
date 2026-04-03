@@ -26,9 +26,10 @@ interface AssignedService {
   destination?: string;
   notes?: string;
   created_at: string;
-  assigned_at?: string;
+  offered_at?: string;
   customer_name?: string;
   estimated_minutes?: number;
+  is_priority?: boolean;
 }
 
 interface Driver {
@@ -162,19 +163,21 @@ export default function DriverHomeScreen() {
     if (!driver) return;
     
     try {
-      const response = await fetch(`${API_URL}/api/services/my-assigned/${driver.id}`);
+      const response = await fetch(`${API_URL}/api/services/for-driver/${driver.id}`);
       const data = await response.json();
       
-      // Vibrate if new service assigned
-      if (data.length > previousServiceCount.current && previousServiceCount.current > 0) {
-        Vibration.vibrate([0, 500, 200, 500]);
-        Alert.alert('🚕 Nuevo Servicio', '¡Te han asignado un nuevo servicio!');
+      // Vibrate if new service available
+      if (data.length > previousServiceCount.current && previousServiceCount.current >= 0) {
+        if (data.length > 0) {
+          Vibration.vibrate([0, 500, 200, 500]);
+          Alert.alert('🚕 ¡Nuevo Servicio!', 'Tienes un servicio disponible cerca de ti');
+        }
       }
       previousServiceCount.current = data.length;
       
       setAssignedServices(data);
     } catch (error) {
-      console.error('Error fetching assigned services:', error);
+      console.error('Error fetching services:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -241,18 +244,18 @@ export default function DriverHomeScreen() {
     if (!driver) return;
 
     Alert.alert(
-      'Rechazar Servicio',
-      '¿Estás seguro? El servicio será asignado a otro conductor.',
+      'Pasar Servicio',
+      '¿No quieres tomar este servicio? Se ofrecerá al siguiente conductor más cercano.',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
-          text: 'Rechazar',
+          text: 'Pasar',
           style: 'destructive',
           onPress: async () => {
             setProcessingId(serviceId);
             try {
               const response = await fetch(
-                `${API_URL}/api/services/${serviceId}/reject`,
+                `${API_URL}/api/services/${serviceId}/pass`,
                 {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -263,10 +266,10 @@ export default function DriverHomeScreen() {
               const data = await response.json();
 
               if (response.ok) {
-                Alert.alert('Servicio Rechazado', 'El servicio fue asignado a otro conductor');
+                Alert.alert('Servicio Pasado', 'El servicio se ofreció a otro conductor');
                 fetchAssignedServices();
               } else {
-                Alert.alert('Error', data.detail || 'No se pudo rechazar el servicio');
+                Alert.alert('Error', data.detail || 'No se pudo pasar el servicio');
               }
             } catch (error) {
               Alert.alert('Error', 'No se pudo conectar al servidor');
@@ -289,10 +292,10 @@ export default function DriverHomeScreen() {
 
   const renderServiceItem = ({ item }: { item: AssignedService }) => (
     <View style={styles.serviceCard}>
-      {/* Assigned Badge */}
+      {/* Priority Badge */}
       <View style={styles.assignedBadge}>
-        <Ionicons name="star" size={16} color="#000" />
-        <Text style={styles.assignedText}>ASIGNADO A TI</Text>
+        <Ionicons name="flash" size={16} color="#000" />
+        <Text style={styles.assignedText}>ERES EL MÁS CERCANO</Text>
       </View>
 
       {/* Time Estimate */}
@@ -300,7 +303,7 @@ export default function DriverHomeScreen() {
         <View style={styles.timeEstimate}>
           <Ionicons name="time" size={20} color="#4CAF50" />
           <Text style={styles.timeText}>
-            A {item.estimated_minutes} min del cliente
+            Estás a {item.estimated_minutes} min del cliente
           </Text>
         </View>
       )}
@@ -352,7 +355,7 @@ export default function DriverHomeScreen() {
           ) : (
             <>
               <Ionicons name="close-circle" size={20} color="#fff" />
-              <Text style={styles.rejectButtonText}>Rechazar</Text>
+              <Text style={styles.rejectButtonText}>Pasar</Text>
             </>
           )}
         </TouchableOpacity>
@@ -450,7 +453,7 @@ export default function DriverHomeScreen() {
 
       {/* Title */}
       <View style={styles.titleContainer}>
-        <Text style={styles.title}>Servicios Asignados</Text>
+        <Text style={styles.title}>Servicios Disponibles</Text>
         {assignedServices.length > 0 && (
           <View style={styles.countBadge}>
             <Text style={styles.countText}>{assignedServices.length}</Text>
