@@ -64,13 +64,9 @@ class ServiceRequest(BaseModel):
     pickup_longitude: Optional[float] = None
     destination: Optional[str] = None  # Destino opcional
     notes: Optional[str] = None  # Notas adicionales
-    status: str = "pending"  # pending, offered, accepted, completed, cancelled
-    offered_to_driver_id: Optional[str] = None  # Driver who can see/accept first
-    offered_at: Optional[datetime] = None
+    status: str = "pending"  # pending, accepted, completed, cancelled
     accepted_by_driver_id: Optional[str] = None
     accepted_at: Optional[datetime] = None
-    passed_by_drivers: List[str] = Field(default_factory=list)  # Drivers who passed/rejected
-    estimated_minutes: Optional[int] = None  # Time estimate for offered driver
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class ServiceRequestCreate(BaseModel):
@@ -160,22 +156,16 @@ def estimate_time_minutes(distance_km: float, avg_speed_kmh: float = 30) -> int:
 
 async def find_nearest_available_driver(
     pickup_lat: float, 
-    pickup_lon: float, 
-    excluded_driver_ids: List[str] = None
+    pickup_lon: float
 ) -> Optional[dict]:
     """
     Find the nearest driver with active GPS location.
-    Excludes drivers who have already passed on the service.
     Returns driver dict with distance and estimated time.
     """
-    if excluded_driver_ids is None:
-        excluded_driver_ids = []
-    
     # Get all active drivers with location
     query = {
         "is_active": True,
-        "current_location": {"$ne": None},
-        "id": {"$nin": excluded_driver_ids}
+        "current_location": {"$ne": None}
     }
     
     drivers = await db.drivers.find(query).to_list(100)
@@ -205,64 +195,25 @@ async def find_nearest_available_driver(
     drivers_with_distance.sort(key=lambda x: x["distance_km"])
     return drivers_with_distance[0]
 
-async def offer_service_to_nearest_driver(service_id: str) -> dict:
+async def is_driver_the_nearest(
+    driver_id: str,
+    pickup_lat: float,
+    pickup_lon: float
+) -> tuple:
     """
-    Find and OFFER the service to the nearest driver.
-    The driver will see it in their app and decide if they want to accept.
+    Check if a driver is the nearest to the pickup location.
+    Returns (is_nearest: bool, nearest_driver_info: dict or None)
     """
-    service = await db.service_requests.find_one({"id": service_id})
-    if not service:
-        return {"success": False, "message": "Servicio no encontrado"}
-    
-    # Check if service has GPS coordinates
-    if not service.get("pickup_latitude") or not service.get("pickup_longitude"):
-        return {"success": False, "message": "Servicio sin coordenadas GPS", "status": "pending"}
-    
-    # Find nearest driver excluding those who passed
-    passed_drivers = service.get("passed_by_drivers", [])
-    
-    nearest = await find_nearest_available_driver(
-        service["pickup_latitude"],
-        service["pickup_longitude"],
-        excluded_driver_ids=passed_drivers
-    )
+    nearest = await find_nearest_available_driver(pickup_lat, pickup_lon)
     
     if not nearest:
-        return {
-            "success": False, 
-            "message": "No hay conductores disponibles con ubicación activa",
-            "status": "pending"
-        }
+        # No drivers available, allow this one
+        return True, None
     
-    driver = nearest["driver"]
-    
-    # Offer to this driver (they will see it first)
-    await db.service_requests.update_one(
-        {"id": service_id},
-        {
-            "$set": {
-                "status": "offered",
-                "offered_to_driver_id": driver["id"],
-                "offered_at": datetime.utcnow(),
-                "estimated_minutes": nearest["estimated_minutes"]
-            }
-        }
-    )
-    
-    logger.info(f"Service {service_id} offered to driver {driver['name']} ({nearest['distance_km']} km, {nearest['estimated_minutes']} min)")
-    
-    return {
-        "success": True,
-        "message": f"Servicio ofrecido a {driver['name']} (el más cercano)",
-        "driver": {
-            "id": driver["id"],
-            "name": driver["name"],
-            "phone": driver["phone"],
-            "vehicle_plate": driver["vehicle_plate"]
-        },
-        "distance_km": nearest["distance_km"],
-        "estimated_minutes": nearest["estimated_minutes"]
-    }
+    if nearest["driver"]["id"] == driver_id:
+        return True, nearest
+    else:
+        return False, nearest
 
 # ==================== ROUTES ====================
 
@@ -363,156 +314,29 @@ async def delete_driver(driver_id: str):
 @api_router.post("/services")
 async def create_service_request(service: ServiceRequestCreate):
     """
-    Create a new service request and offer to nearest driver.
-    The driver will see it and decide if they want to accept.
+    Create a new service request.
+    All drivers with active GPS will see it.
     """
     service_obj = ServiceRequest(**service.dict())
     await db.service_requests.insert_one(service_obj.dict())
     
-    # Try to offer to nearest driver if coordinates are provided
-    offer_result = None
-    if service.pickup_latitude and service.pickup_longitude:
-        offer_result = await offer_service_to_nearest_driver(service_obj.id)
-        
-        if offer_result["success"]:
-            # Fetch updated service
-            updated_service = await db.service_requests.find_one({"id": service_obj.id})
-            return {
-                "service": ServiceRequest(**updated_service).dict(),
-                "offer": offer_result
-            }
-    
     return {
         "service": service_obj.dict(),
-        "offer": offer_result or {"success": False, "message": "Sin coordenadas GPS, esperando conductor"}
-    }
-
-@api_router.get("/services/for-driver/{driver_id}")
-async def get_services_for_driver(driver_id: str):
-    """
-    Get services available for a specific driver.
-    Shows services offered to this driver first (priority).
-    """
-    # Get services offered specifically to this driver
-    offered_services = await db.service_requests.find({
-        "offered_to_driver_id": driver_id,
-        "status": "offered"
-    }).sort("offered_at", -1).to_list(50)
-    
-    result = []
-    for service in offered_services:
-        result.append({
-            "id": service["id"],
-            "customer_name": service.get("customer_name", "Cliente"),
-            "pickup_address": service["pickup_address"],
-            "pickup_latitude": service.get("pickup_latitude"),
-            "pickup_longitude": service.get("pickup_longitude"),
-            "destination": service.get("destination"),
-            "notes": service.get("notes"),
-            "estimated_minutes": service.get("estimated_minutes"),
-            "offered_at": service.get("offered_at"),
-            "created_at": service["created_at"],
-            "is_priority": True  # This driver is the closest
-        })
-    
-    return result
-
-@api_router.post("/services/{service_id}/accept")
-async def accept_service(service_id: str, request: AcceptServiceRequest):
-    """
-    Accept a service. Only the driver who was offered the service can accept it.
-    """
-    service = await db.service_requests.find_one({"id": service_id})
-    if not service:
-        raise HTTPException(status_code=404, detail="Servicio no encontrado")
-    
-    # Verify driver is the one it was offered to
-    if service.get("offered_to_driver_id") != request.driver_id:
-        raise HTTPException(status_code=403, detail="Este servicio no está disponible para ti")
-    
-    if service["status"] not in ["offered", "pending"]:
-        raise HTTPException(status_code=400, detail="Este servicio ya no está disponible")
-    
-    # Accept the service
-    await db.service_requests.update_one(
-        {"id": service_id},
-        {
-            "$set": {
-                "status": "accepted",
-                "accepted_by_driver_id": request.driver_id,
-                "accepted_at": datetime.utcnow()
-            }
-        }
-    )
-    
-    logger.info(f"Service {service_id} accepted by driver {request.driver_id}")
-    
-    # Return full service info including customer phone
-    updated_service = await db.service_requests.find_one({"id": service_id})
-    return {
-        "success": True,
-        "message": "¡Servicio aceptado! Ahora puedes ver los datos del cliente.",
-        "service": ServiceRequest(**updated_service).dict()
-    }
-
-@api_router.post("/services/{service_id}/pass")
-async def pass_service(service_id: str, request: AcceptServiceRequest):
-    """
-    Pass on a service (don't want to take it). 
-    The service will be offered to the next nearest driver.
-    """
-    service = await db.service_requests.find_one({"id": service_id})
-    if not service:
-        raise HTTPException(status_code=404, detail="Servicio no encontrado")
-    
-    # Verify driver is the one it was offered to
-    if service.get("offered_to_driver_id") != request.driver_id:
-        raise HTTPException(status_code=403, detail="Este servicio no está disponible para ti")
-    
-    if service["status"] != "offered":
-        raise HTTPException(status_code=400, detail="Este servicio ya no se puede pasar")
-    
-    # Add driver to passed list
-    passed_drivers = service.get("passed_by_drivers", [])
-    passed_drivers.append(request.driver_id)
-    
-    # Reset offer
-    await db.service_requests.update_one(
-        {"id": service_id},
-        {
-            "$set": {
-                "status": "pending",
-                "offered_to_driver_id": None,
-                "offered_at": None,
-                "estimated_minutes": None,
-                "passed_by_drivers": passed_drivers
-            }
-        }
-    )
-    
-    logger.info(f"Service {service_id} passed by driver {request.driver_id}")
-    
-    # Try to offer to next nearest driver
-    next_offer = await offer_service_to_nearest_driver(service_id)
-    
-    return {
-        "success": True,
-        "message": "Servicio pasado al siguiente conductor",
-        "next_offer": next_offer
+        "message": "Servicio creado. Todos los conductores activos lo verán."
     }
 
 @api_router.get("/services/available")
 async def get_available_services(
+    driver_id: Optional[str] = None,
     driver_lat: Optional[float] = None,
     driver_lon: Optional[float] = None
 ):
     """
-    Get all pending/available services (services not yet offered to anyone).
+    Get all pending services for drivers.
+    ALL drivers see ALL pending services, sorted by proximity to them.
+    Each service shows estimated time based on driver's location.
     """
-    services = await db.service_requests.find({
-        "status": "pending",
-        "offered_to_driver_id": None
-    }).sort("created_at", -1).to_list(100)
+    services = await db.service_requests.find({"status": "pending"}).sort("created_at", -1).to_list(100)
     
     result = []
     for service in services:
@@ -526,10 +350,11 @@ async def get_available_services(
             "created_at": service["created_at"],
             "customer_name": service.get("customer_name", "Cliente"),
             "distance_km": None,
-            "estimated_minutes": None
+            "estimated_minutes": None,
+            "is_nearest": False
         }
         
-        # Calculate distance and estimated time if both locations are available
+        # Calculate distance and time if driver location provided
         if (driver_lat is not None and driver_lon is not None and 
             service.get("pickup_latitude") is not None and 
             service.get("pickup_longitude") is not None):
@@ -540,15 +365,22 @@ async def get_available_services(
             )
             service_data["distance_km"] = round(distance, 2)
             service_data["estimated_minutes"] = estimate_time_minutes(distance)
+            
+            # Check if this driver is the nearest
+            if driver_id:
+                is_nearest, _ = await is_driver_the_nearest(
+                    driver_id,
+                    service["pickup_latitude"],
+                    service["pickup_longitude"]
+                )
+                service_data["is_nearest"] = is_nearest
         
         result.append(service_data)
     
-    # Sort by estimated time if driver location was provided
+    # Sort by estimated time (nearest first)
     if driver_lat is not None and driver_lon is not None:
-        # Services with coordinates go first, sorted by time
-        # Services without coordinates go last
         result.sort(key=lambda x: (
-            x["estimated_minutes"] is None,  # None values go to end
+            x["estimated_minutes"] is None,
             x["estimated_minutes"] or float('inf')
         ))
     
@@ -556,8 +388,10 @@ async def get_available_services(
 
 @api_router.post("/services/{service_id}/accept")
 async def accept_service(service_id: str, request: AcceptServiceRequest):
-    """Accept a service request - only the accepting driver gets customer info"""
-    # Check if service exists and is pending
+    """
+    Accept a service. Only the NEAREST driver can accept.
+    If not the nearest, the request is rejected.
+    """
     service = await db.service_requests.find_one({"id": service_id})
     if not service:
         raise HTTPException(status_code=404, detail="Servicio no encontrado")
@@ -570,9 +404,44 @@ async def accept_service(service_id: str, request: AcceptServiceRequest):
     if not driver:
         raise HTTPException(status_code=404, detail="Conductor no encontrado")
     
-    # Accept the service
+    # Check if service has GPS coordinates
+    if not service.get("pickup_latitude") or not service.get("pickup_longitude"):
+        # No GPS, any driver can take it
+        await db.service_requests.update_one(
+            {"id": service_id, "status": "pending"},
+            {
+                "$set": {
+                    "status": "accepted",
+                    "accepted_by_driver_id": request.driver_id,
+                    "accepted_at": datetime.utcnow()
+                }
+            }
+        )
+        updated_service = await db.service_requests.find_one({"id": service_id})
+        return {
+            "success": True,
+            "message": "¡Servicio aceptado!",
+            "service": ServiceRequest(**updated_service).dict()
+        }
+    
+    # CHECK IF THIS DRIVER IS THE NEAREST
+    is_nearest, nearest_info = await is_driver_the_nearest(
+        request.driver_id,
+        service["pickup_latitude"],
+        service["pickup_longitude"]
+    )
+    
+    if not is_nearest:
+        # This driver is NOT the nearest - reject the acceptance
+        nearest_driver = nearest_info["driver"]
+        raise HTTPException(
+            status_code=403, 
+            detail=f"No puedes tomar este servicio. Hay un conductor más cercano ({nearest_driver['name']} a {nearest_info['estimated_minutes']} min)."
+        )
+    
+    # This driver IS the nearest - accept the service
     result = await db.service_requests.update_one(
-        {"id": service_id, "status": "pending"},  # Double check status
+        {"id": service_id, "status": "pending"},
         {
             "$set": {
                 "status": "accepted",
@@ -585,11 +454,13 @@ async def accept_service(service_id: str, request: AcceptServiceRequest):
     if result.modified_count == 0:
         raise HTTPException(status_code=400, detail="No se pudo aceptar el servicio. Puede que otro conductor lo haya tomado.")
     
+    logger.info(f"Service {service_id} accepted by nearest driver {driver['name']}")
+    
     # Return full service info including customer phone
     updated_service = await db.service_requests.find_one({"id": service_id})
     return {
         "success": True,
-        "message": "Servicio aceptado exitosamente",
+        "message": "¡Servicio aceptado! Eres el conductor más cercano.",
         "service": ServiceRequest(**updated_service).dict()
     }
 

@@ -8,7 +8,6 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
-  Platform,
   Vibration,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,7 +17,7 @@ import * as Location from 'expo-location';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
-interface AssignedService {
+interface Service {
   id: string;
   pickup_address: string;
   pickup_latitude?: number;
@@ -26,10 +25,10 @@ interface AssignedService {
   destination?: string;
   notes?: string;
   created_at: string;
-  offered_at?: string;
   customer_name?: string;
+  distance_km?: number;
   estimated_minutes?: number;
-  is_priority?: boolean;
+  is_nearest?: boolean;
 }
 
 interface Driver {
@@ -47,10 +46,10 @@ interface LocationCoords {
 export default function DriverHomeScreen() {
   const params = useLocalSearchParams();
   const [driver, setDriver] = useState<Driver | null>(null);
-  const [assignedServices, setAssignedServices] = useState<AssignedService[]>([]);
+  const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [processingId, setProcessingId] = useState<string | null>(null);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [currentLocation, setCurrentLocation] = useState<LocationCoords | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
@@ -80,14 +79,13 @@ export default function DriverHomeScreen() {
             setLocationError('Se requiere permiso de ubicación');
             Alert.alert(
               'Permiso Requerido',
-              'Para recibir servicios cercanos, necesitamos acceso a tu ubicación.',
+              'Para ver los servicios y su distancia, necesitamos acceso a tu ubicación.',
               [{ text: 'Entendido' }]
             );
           }
           return;
         }
 
-        // Get initial location
         const location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
@@ -100,7 +98,6 @@ export default function DriverHomeScreen() {
           setLocationError(null);
         }
 
-        // Start watching location changes
         locationSubscription.current = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.Balanced,
@@ -159,49 +156,71 @@ export default function DriverHomeScreen() {
     }
   };
 
-  const fetchAssignedServices = useCallback(async () => {
+  const fetchServices = useCallback(async () => {
     if (!driver) return;
     
     try {
-      const response = await fetch(`${API_URL}/api/services/for-driver/${driver.id}`);
+      let url = `${API_URL}/api/services/available?driver_id=${driver.id}`;
+      
+      if (currentLocation) {
+        url += `&driver_lat=${currentLocation.latitude}&driver_lon=${currentLocation.longitude}`;
+      }
+      
+      const response = await fetch(url);
       const data = await response.json();
       
       // Vibrate if new service available
       if (data.length > previousServiceCount.current && previousServiceCount.current >= 0) {
-        if (data.length > 0) {
-          Vibration.vibrate([0, 500, 200, 500]);
-          Alert.alert('🚕 ¡Nuevo Servicio!', 'Tienes un servicio disponible cerca de ti');
+        if (data.length > 0 && previousServiceCount.current > 0) {
+          Vibration.vibrate([0, 300, 100, 300]);
         }
       }
       previousServiceCount.current = data.length;
       
-      setAssignedServices(data);
+      setServices(data);
     } catch (error) {
       console.error('Error fetching services:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [driver]);
+  }, [driver, currentLocation]);
 
   useEffect(() => {
     if (driver) {
-      fetchAssignedServices();
-      // Auto-refresh every 5 seconds to check for new assignments
-      const interval = setInterval(fetchAssignedServices, 5000);
+      fetchServices();
+      const interval = setInterval(fetchServices, 5000);
       return () => clearInterval(interval);
     }
-  }, [driver, fetchAssignedServices]);
+  }, [driver, fetchServices]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchAssignedServices();
+    fetchServices();
   };
 
-  const handleAcceptService = async (serviceId: string) => {
+  const handleAcceptService = async (service: Service) => {
     if (!driver) return;
 
-    setProcessingId(serviceId);
+    // Show warning if not the nearest
+    if (service.is_nearest === false) {
+      Alert.alert(
+        '⚠️ Hay un conductor más cercano',
+        'Solo el conductor más cercano puede tomar este servicio. ¿Deseas intentar de todas formas?',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Intentar', onPress: () => tryAcceptService(service.id) }
+        ]
+      );
+    } else {
+      tryAcceptService(service.id);
+    }
+  };
+
+  const tryAcceptService = async (serviceId: string) => {
+    if (!driver) return;
+    
+    setAcceptingId(serviceId);
     try {
       const response = await fetch(
         `${API_URL}/api/services/${serviceId}/accept`,
@@ -215,7 +234,7 @@ export default function DriverHomeScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        Alert.alert('✅ ¡Servicio Aceptado!', 'Ahora puedes ver los datos del cliente', [
+        Alert.alert('✅ ¡Servicio Aceptado!', data.message, [
           {
             text: 'Ver Detalles',
             onPress: () => {
@@ -229,57 +248,16 @@ export default function DriverHomeScreen() {
             },
           },
         ]);
-        fetchAssignedServices();
+        fetchServices();
       } else {
-        Alert.alert('Error', data.detail || 'No se pudo aceptar el servicio');
+        Alert.alert('❌ No disponible', data.detail || 'No se pudo aceptar el servicio');
+        fetchServices(); // Refresh to update is_nearest status
       }
     } catch (error) {
       Alert.alert('Error', 'No se pudo conectar al servidor');
     } finally {
-      setProcessingId(null);
+      setAcceptingId(null);
     }
-  };
-
-  const handleRejectService = async (serviceId: string) => {
-    if (!driver) return;
-
-    Alert.alert(
-      'Pasar Servicio',
-      '¿No quieres tomar este servicio? Se ofrecerá al siguiente conductor más cercano.',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Pasar',
-          style: 'destructive',
-          onPress: async () => {
-            setProcessingId(serviceId);
-            try {
-              const response = await fetch(
-                `${API_URL}/api/services/${serviceId}/pass`,
-                {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ driver_id: driver.id }),
-                }
-              );
-
-              const data = await response.json();
-
-              if (response.ok) {
-                Alert.alert('Servicio Pasado', 'El servicio se ofreció a otro conductor');
-                fetchAssignedServices();
-              } else {
-                Alert.alert('Error', data.detail || 'No se pudo pasar el servicio');
-              }
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo conectar al servidor');
-            } finally {
-              setProcessingId(null);
-            }
-          },
-        },
-      ]
-    );
   };
 
   const formatTime = (dateString: string) => {
@@ -290,26 +268,47 @@ export default function DriverHomeScreen() {
     });
   };
 
-  const renderServiceItem = ({ item }: { item: AssignedService }) => (
-    <View style={styles.serviceCard}>
-      {/* Priority Badge */}
-      <View style={styles.assignedBadge}>
-        <Ionicons name="flash" size={16} color="#000" />
-        <Text style={styles.assignedText}>ERES EL MÁS CERCANO</Text>
-      </View>
+  const getTimeColor = (minutes: number | undefined | null) => {
+    if (!minutes) return '#aaa';
+    if (minutes <= 3) return '#4CAF50';
+    if (minutes <= 7) return '#FFD700';
+    if (minutes <= 15) return '#FF9800';
+    return '#FF6B6B';
+  };
 
-      {/* Time Estimate */}
-      {item.estimated_minutes && (
-        <View style={styles.timeEstimate}>
-          <Ionicons name="time" size={20} color="#4CAF50" />
+  const renderServiceItem = ({ item }: { item: Service }) => (
+    <View style={[
+      styles.serviceCard,
+      item.is_nearest && styles.nearestServiceCard
+    ]}>
+      {/* Nearest Badge */}
+      {item.is_nearest && (
+        <View style={styles.nearestBadge}>
+          <Ionicons name="star" size={16} color="#000" />
+          <Text style={styles.nearestText}>¡ERES EL MÁS CERCANO!</Text>
+        </View>
+      )}
+
+      {/* Time/Distance Badge */}
+      {item.estimated_minutes !== null && item.estimated_minutes !== undefined && (
+        <View style={[
+          styles.timeBadge,
+          { backgroundColor: getTimeColor(item.estimated_minutes) }
+        ]}>
+          <Ionicons name="time" size={18} color="#000" />
           <Text style={styles.timeText}>
-            Estás a {item.estimated_minutes} min del cliente
+            {item.estimated_minutes} min
           </Text>
+          {item.distance_km !== null && item.distance_km !== undefined && (
+            <Text style={styles.distanceText}>
+              ({item.distance_km} km)
+            </Text>
+          )}
         </View>
       )}
 
       <View style={styles.serviceHeader}>
-        <View style={styles.timeContainer}>
+        <View style={styles.headerTimeContainer}>
           <Ionicons name="calendar" size={16} color="#888" />
           <Text style={styles.headerTimeText}>{formatTime(item.created_at)}</Text>
         </View>
@@ -343,38 +342,26 @@ export default function DriverHomeScreen() {
         </View>
       )}
 
-      {/* Action Buttons */}
-      <View style={styles.actionButtons}>
-        <TouchableOpacity
-          style={styles.rejectButton}
-          onPress={() => handleRejectService(item.id)}
-          disabled={processingId === item.id}
-        >
-          {processingId === item.id ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <>
-              <Ionicons name="close-circle" size={20} color="#fff" />
-              <Text style={styles.rejectButtonText}>Pasar</Text>
-            </>
-          )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.acceptButton}
-          onPress={() => handleAcceptService(item.id)}
-          disabled={processingId === item.id}
-        >
-          {processingId === item.id ? (
-            <ActivityIndicator color="#000" />
-          ) : (
-            <>
-              <Ionicons name="checkmark-circle" size={24} color="#000" />
-              <Text style={styles.acceptButtonText}>ACEPTAR</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity
+        style={[
+          styles.acceptButton,
+          item.is_nearest && styles.nearestAcceptButton,
+          acceptingId === item.id && styles.acceptingButton,
+        ]}
+        onPress={() => handleAcceptService(item)}
+        disabled={acceptingId === item.id}
+      >
+        {acceptingId === item.id ? (
+          <ActivityIndicator color="#000" />
+        ) : (
+          <>
+            <Ionicons name="checkmark-circle" size={24} color="#000" />
+            <Text style={styles.acceptButtonText}>
+              {item.is_nearest ? 'ACEPTAR SERVICIO' : 'INTENTAR ACEPTAR'}
+            </Text>
+          </>
+        )}
+      </TouchableOpacity>
     </View>
   );
 
@@ -439,7 +426,7 @@ export default function DriverHomeScreen() {
         {currentLocation ? (
           <View style={styles.locationActive}>
             <Ionicons name="locate" size={16} color="#4CAF50" />
-            <Text style={styles.locationActiveText}>GPS Activo - Recibiendo servicios</Text>
+            <Text style={styles.locationActiveText}>GPS Activo</Text>
           </View>
         ) : (
           <View style={styles.locationInactive}>
@@ -454,29 +441,31 @@ export default function DriverHomeScreen() {
       {/* Title */}
       <View style={styles.titleContainer}>
         <Text style={styles.title}>Servicios Disponibles</Text>
-        {assignedServices.length > 0 && (
-          <View style={styles.countBadge}>
-            <Text style={styles.countText}>{assignedServices.length}</Text>
-          </View>
-        )}
+        <View style={styles.countBadge}>
+          <Text style={styles.countText}>{services.length}</Text>
+        </View>
       </View>
 
+      {/* Info */}
+      {currentLocation && services.length > 0 && (
+        <View style={styles.infoBar}>
+          <Ionicons name="information-circle" size={16} color="#4ECDC4" />
+          <Text style={styles.infoText}>
+            Solo el conductor más cercano puede aceptar cada servicio
+          </Text>
+        </View>
+      )}
+
       {/* Services List */}
-      {assignedServices.length === 0 ? (
+      {services.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="car-outline" size={80} color="#444" />
-          <Text style={styles.emptyText}>No tienes servicios asignados</Text>
-          <Text style={styles.emptySubtext}>
-            Cuando un cliente pida taxi cerca de ti,{'\n'}el servicio aparecerá aquí automáticamente
-          </Text>
-          <View style={styles.waitingIndicator}>
-            <ActivityIndicator color="#FFD700" size="small" />
-            <Text style={styles.waitingText}>Esperando servicios...</Text>
-          </View>
+          <Text style={styles.emptyText}>No hay servicios disponibles</Text>
+          <Text style={styles.emptySubtext}>Desliza hacia abajo para actualizar</Text>
         </View>
       ) : (
         <FlatList
-          data={assignedServices}
+          data={services}
           renderItem={renderServiceItem}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
@@ -585,14 +574,26 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   countBadge: {
-    backgroundColor: '#4CAF50',
+    backgroundColor: '#FFD700',
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 12,
   },
   countText: {
-    color: '#fff',
+    color: '#000',
     fontWeight: 'bold',
+  },
+  infoBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 6,
+  },
+  infoText: {
+    color: '#4ECDC4',
+    fontSize: 12,
   },
   listContent: {
     padding: 16,
@@ -602,38 +603,49 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FFD700',
+  },
+  nearestServiceCard: {
+    borderLeftColor: '#4CAF50',
     borderWidth: 2,
     borderColor: '#4CAF50',
   },
-  assignedBadge: {
+  nearestBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: '#FFD700',
+    backgroundColor: '#4CAF50',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
     marginBottom: 12,
     gap: 4,
   },
-  assignedText: {
+  nearestText: {
     color: '#000',
     fontSize: 12,
     fontWeight: 'bold',
   },
-  timeEstimate: {
+  timeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0f3460',
-    padding: 10,
-    borderRadius: 8,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
     marginBottom: 12,
-    gap: 8,
+    gap: 4,
   },
   timeText: {
-    color: '#4CAF50',
-    fontSize: 16,
+    color: '#000',
+    fontSize: 14,
     fontWeight: 'bold',
+  },
+  distanceText: {
+    color: '#000',
+    fontSize: 12,
+    opacity: 0.8,
   },
   serviceHeader: {
     flexDirection: 'row',
@@ -641,7 +653,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  timeContainer: {
+  headerTimeContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
@@ -686,35 +698,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     flex: 1,
   },
-  actionButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
-  },
-  rejectButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FF6B6B',
-    borderRadius: 12,
-    paddingVertical: 14,
-    gap: 6,
-  },
-  rejectButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
   acceptButton: {
-    flex: 2,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#4CAF50',
+    backgroundColor: '#FFD700',
     borderRadius: 12,
     paddingVertical: 14,
     gap: 8,
+  },
+  nearestAcceptButton: {
+    backgroundColor: '#4CAF50',
+  },
+  acceptingButton: {
+    backgroundColor: '#999',
   },
   acceptButtonText: {
     color: '#000',
@@ -731,23 +728,10 @@ const styles = StyleSheet.create({
     color: '#aaa',
     fontSize: 18,
     marginTop: 16,
-    textAlign: 'center',
   },
   emptySubtext: {
     color: '#666',
     fontSize: 14,
     marginTop: 8,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  waitingIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 24,
-    gap: 8,
-  },
-  waitingText: {
-    color: '#FFD700',
-    fontSize: 14,
   },
 });
